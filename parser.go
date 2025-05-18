@@ -76,7 +76,7 @@ func ParseSheetIntoStructCb[K any](options Options, cb func(K)) (err error) {
 		return err
 	}
 
-	mappings, err := createMappings[K](resp)
+	mappings, colToFieldIdx, err := createMappings[K](resp)
 	if err != nil {
 		return err
 	}
@@ -85,11 +85,18 @@ func ParseSheetIntoStructCb[K any](options Options, cb func(K)) (err error) {
 
 	for rowIdx, row := range resp.Values[1:] {
 		var k K
-		for i := range mappings {
-			field := mappings[i]
-			val, err := reflectParseString(field.Type, row[i].(string), options.DatetimeFormats, rowIdx, i)
+		for colIdx, cellIf := range row {
+			fieldIdx := -1
+			if colIdx < len(colToFieldIdx) {
+				fieldIdx = colToFieldIdx[colIdx]
+			}
+			if fieldIdx == -1 {
+				continue // skip empty columns
+			}
+			field := mappings[fieldIdx]
+			val, err := reflectParseString(field.Type, cellIf.(string), options.DatetimeFormats)
 			if err != nil {
-				return fmt.Errorf("%s: %s%d: %w", sheetName, getColumnName(i), rowIdx+2, err)
+				return fmt.Errorf("%s: %s%d: %w", sheetName, getColumnName(colIdx), rowIdx+2, err)
 			}
 			reflect.ValueOf(&k).Elem().FieldByName(field.Name).Set(val)
 		}
@@ -122,7 +129,7 @@ func fillEmptyValues(data *sheets.ValueRange) {
 	}
 }
 
-func reflectParseString(pReflectType reflect.Type, cell string, dateTimeFormats []string, rowIdx, colIdx int) (reflect.Value, error) {
+func reflectParseString(pReflectType reflect.Type, cell string, dateTimeFormats []string) (reflect.Value, error) {
 	reflectType := pReflectType
 	var isPointer bool
 	isEmpty := cell == ""
@@ -284,12 +291,15 @@ func reflectParseString(pReflectType reflect.Type, cell string, dateTimeFormats 
 	return reflect.ValueOf(nil), fmt.Errorf("%w: %s", ErrUnsupportedType, reflectType.Kind().String())
 }
 
-func createMappings[K any](data *sheets.ValueRange) (mappings []reflect.StructField, err error) {
+func createMappings[K any](data *sheets.ValueRange) (mappings []reflect.StructField, colToFieldIdx []int, err error) {
 	firstRow := data.Values[0]
+	colToFieldIdx = make([]int, len(firstRow))
 	for colIdx, cellIf := range firstRow {
 		cell := cellIf.(string)
 		if cell == "" {
-			break
+			// Mark as -1 to indicate no mapping for this column
+			colToFieldIdx[colIdx] = -1
+			continue
 		}
 		field := reflectGetFieldByTagOrName[K](cell)
 		if field == nil {
@@ -297,6 +307,7 @@ func createMappings[K any](data *sheets.ValueRange) (mappings []reflect.StructFi
 			return
 		}
 		mappings = append(mappings, *field)
+		colToFieldIdx[colIdx] = len(mappings) - 1
 	}
 	return
 }
